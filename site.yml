@@ -1,0 +1,109 @@
+---
+- name: Install ClickHouse
+  hosts: clickhouse
+  become: true
+  tasks:
+    - name: Install prerequisite packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Add ClickHouse GPG key
+      ansible.builtin.shell: |
+        curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/clickhouse-keyring.gpg
+
+    - name: Add ClickHouse repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main"
+        state: present
+        filename: clickhouse
+
+    - name: Install clickhouse packages
+      ansible.builtin.apt:
+        name:
+          - clickhouse-client
+          - clickhouse-server
+        state: present
+        update_cache: true
+
+    - name: Ensure clickhouse-server is started and enabled
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: started
+        enabled: true
+
+- name: Install and configure LightHouse
+  hosts: lighthouse
+  become: true
+  vars:
+    lighthouse_download_url: "https://github.com/VKCOM/lighthouse/archive/refs/heads/master.zip"
+    lighthouse_archive: /tmp/lighthouse.zip
+    lighthouse_dir: /var/www/lighthouse
+    nginx_user: www-data
+
+  tasks:
+    - name: Install nginx and unzip
+      ansible.builtin.package:
+        name:
+          - nginx
+          - unzip
+        state: present
+
+    - name: Download Lighthouse static files
+      ansible.builtin.get_url:
+        url: "{{ lighthouse_download_url }}"
+        dest: "{{ lighthouse_archive }}"
+        mode: '0644'
+
+    - name: Create Lighthouse directory
+      ansible.builtin.file:
+        path: "{{ lighthouse_dir }}"
+        state: directory
+        owner: "{{ nginx_user }}"
+        mode: '0755'
+
+    - name: Unarchive Lighthouse
+      ansible.builtin.unarchive:
+        src: "{{ lighthouse_archive }}"
+        dest: "{{ lighthouse_dir }}"
+        remote_src: true
+      notify: Restart nginx
+
+    - name: Configure nginx for Lighthouse
+      ansible.builtin.template:
+        src: nginx_lighthouse.j2
+        dest: /etc/nginx/sites-available/lighthouse.conf
+        mode: '0644'
+      notify: Restart nginx
+
+    - name: Enable Lighthouse nginx site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/lighthouse.conf
+        dest: /etc/nginx/sites-enabled/lighthouse.conf
+        state: link
+      notify: Restart nginx
+
+    - name: Remove default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: Restart nginx
+
+    - name: Ensure nginx is started and enabled
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Restart nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
